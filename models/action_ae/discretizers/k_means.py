@@ -34,7 +34,7 @@ class KMeansDiscretizer(AbstractDiscretizer):
         cluster_centers = KMeansDiscretizer._kmeans(
             flattened_actions, ncluster=self.n_bins
         )
-        self.bin_centers = cluster_centers.to(self.device)
+        self.bin_centers = cluster_centers.to(self.device).float()
 
     @property
     def suggested_actions(self) -> torch.Tensor:
@@ -84,7 +84,6 @@ class KMeansDiscretizer(AbstractDiscretizer):
         assert (
             input_action.shape[-1] == self.action_dim
         ), "Input action dimension does not match fitted model"
-
         # flatten the input action
         flattened_actions = input_action.view(-1, self.action_dim)
 

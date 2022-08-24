@@ -1,4 +1,4 @@
-name: BlockPushMultimodal-v0
+name: BridgeKitchenDummyEnv-v0
 obs_dim: 16
 action_dim: 2
 action_min: null

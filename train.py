@@ -120,10 +120,15 @@ class Workspace:
                 self.train_loader, desc=f"Training prior epoch {self.prior_epoch}"
             )
             for data in pbar:
-                observations, action, mask = data
+                observations, action, mask, task = data
                 self.state_prior_optimizer.zero_grad(set_to_none=True)
                 obs, act = observations.to(self.device), action.to(self.device)
-                enc_obs = self.obs_encoding_net(obs)
+                if obs.ndim != 3:
+                    enc_obs = self.obs_encoding_net(obs)
+                else:
+                    enc_obs = obs
+                enc_obs = torch.cat([enc_obs, act], dim=-1)
+                enc_obs = self.obs_encoding_net.linear_proj(enc_obs)
                 latent = self.action_ae.encode_into_latent(act, enc_obs)
                 _, loss, loss_components = self.state_prior.get_latent_and_loss(
                     obs_rep=enc_obs,
@@ -141,9 +146,12 @@ class Workspace:
         with utils.eval_mode(
             self.obs_encoding_net, self.action_ae, self.state_prior, no_grad=True
         ):
-            for observations, action, mask in self.test_loader:
+            for observations, action, mask, task in self.test_loader:
                 obs, act = observations.to(self.device), action.to(self.device)
-                enc_obs = self.obs_encoding_net(obs)
+                if obs.ndim != 3:
+                    enc_obs = self.obs_encoding_net(obs)
+                else:
+                    enc_obs = obs
                 latent = self.action_ae.encode_into_latent(act, enc_obs)
                 _, loss, loss_components = self.state_prior.get_latent_and_loss(
                     obs_rep=enc_obs,

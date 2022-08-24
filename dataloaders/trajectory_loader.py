@@ -1,3 +1,4 @@
+from asyncio import tasks
 import logging
 import einops
 import os
@@ -17,6 +18,7 @@ from utils import (
 from typing import Union, Callable, Optional
 from tqdm import tqdm
 
+from envs.bridge_kitchen.get_bridge_tasks import get_bridge_tasks
 
 class RelayKitchenTrajectoryDataset(TensorDataset):
     def __init__(self, data_directory, device="cpu"):
@@ -47,6 +49,78 @@ class RelayKitchenTrajectoryDataset(TensorDataset):
             result.append(self.actions[i, :T, :])
         return torch.cat(result, dim=0)
 
+
+class BridgeTrajectoryDataset(Dataset):
+    def __init__(self, *args, task='all_pickplace_except_tk6', target_task='toykitchen6_croissant_out_of_pot', get_train=True, debug=False, **kwargs):
+        # debug=True
+        if debug:
+            task='toykitchen6_drumstick_on_plate'
+        train_tasks, eval_tasks, target_train_tasks, target_eval_tasks = get_bridge_tasks(task, target_task)
+        
+        print("train_tasks", task)
+        print("eval_tasks", target_task)
+        print('UNUSED ARGS', args, kwargs)
+        
+        if get_train:
+            self.task_paths = train_tasks + target_train_tasks
+        else:
+            self.task_paths = eval_tasks + target_eval_tasks
+
+        tasks = []
+        for tp in self.task_paths:
+            print('loading task', tp)
+            tasks.append(np.load(tp, allow_pickle=True))
+        
+        num_tasks = len(tasks)
+        for i in range(num_tasks): # which task
+            for j in range(len(tasks[i])): # which trajectory
+                num_timesteps = len(tasks[i][j]['actions'])
+                tasks[i][j]['task_id'] = np.zeros((num_timesteps, num_tasks))
+                tasks[i][j]['task_id'][:, i] = 1
+        
+        self.data = np.concatenate(tasks, axis=0)
+    
+    def __len__(self):
+        return len(self.data)
+
+    def get_seq_length(self, idx):
+        return len(self.data[idx]['observations'])
+
+    def get_all_actions(self):
+        result = []
+        for i in range(len(self.data)):
+            T = len(self.data[i]['actions'])
+            result.append(torch.from_numpy(np.stack(self.data[i]['actions'])))
+        return torch.cat(result, dim=0)
+
+    def __getitem__(self, index) :
+        # observations: Tensor[N, T, C, H, W]
+        # actions: Tensor[N, T, C]
+        
+        curr_traj = self.data[index]
+        
+        observations = np.stack([x['images0'] for x in curr_traj['observations']])
+        observations = einops.rearrange(observations, 'n h w c -> n c h w')
+        actions = np.stack(curr_traj['actions'])
+        masks = np.ones(actions.shape[0]) # length of trajectory
+        task = curr_traj['task_id']
+        
+        assert len(observations) == len(actions) == len(masks) == len(task)
+        
+        return_val = (
+            observations,
+            actions,
+            masks,
+            task
+        )
+        
+        return_val = tuple([torch.from_numpy(x).float() for x in return_val])
+        
+        assert return_val[0].ndim == 4
+        
+        return return_val
+    
+        
 
 class CarlaMultipathTrajectoryDataset(Dataset):
     def __init__(
@@ -308,6 +382,7 @@ class TrajectorySlicerDataset(Dataset):
         self.transform = transform
         self.slices = []
         min_seq_length = np.inf
+        
         for i in range(len(self.dataset)):  # type: ignore
             T = self._get_seq_length(i)  # avoid reading actual seq (slow)
             min_seq_length = min(T, min_seq_length)
@@ -351,8 +426,8 @@ class TrajectorySlicerSubset(TrajectorySlicerDataset):
         # self.dataset is a torch.dataset.Subset, so we need to use the parent dataset
         # to extract the true seq length.
         subset = self.dataset
-        return subset.dataset.get_seq_length(subset.indices[idx])  # type: ignore
-
+        return subset.dataset.get_seq_length(idx)  # type: ignore
+            
     def _get_all_actions(self) -> torch.Tensor:
         return self.dataset.dataset.get_all_actions()
 
@@ -386,10 +461,17 @@ class TrajectoryRepDataset(Dataset):
         self.obs = []
         self.actions = []
         self.masks = []
+        self.tasks = []
         self.postprocess = postprocess
+        self.dataset = trajectory_dataset
         with eval_mode(encoder, no_grad=True):
             for i in tqdm(range(len(trajectory_dataset))):
-                obs, act, mask = trajectory_dataset[i]
+                tup = trajectory_dataset[i]
+                if len(tup) == 3:
+                    obs, act, mask = tup
+                    task = mask.unsqueeze(-1) # dummy task
+                else:
+                    obs, act, mask, task = tup
                 if preprocess is not None:
                     obs = preprocess(obs)
                 if batch_size is not None:
@@ -400,9 +482,10 @@ class TrajectoryRepDataset(Dataset):
                     obs_enc = torch.cat(obs_enc, dim=0)
                 else:
                     obs_enc = encoder(obs.to(self.device)).cpu()
-                self.obs.append(obs_enc)
-                self.actions.append(act)
-                self.masks.append(mask)
+                self.obs.append(obs_enc.float())
+                self.actions.append(act.float())
+                self.masks.append(mask.float())
+                self.tasks.append(task.float())
         del encoder
         torch.cuda.empty_cache()
 
@@ -413,7 +496,7 @@ class TrajectoryRepDataset(Dataset):
         obs = self.obs[idx]
         if self.postprocess is not None:
             obs = self.postprocess(obs)
-        return (obs, self.actions[idx], self.masks[idx])
+        return (obs, self.actions[idx], self.masks[idx], self.tasks[idx])
 
     def get_seq_length(self, idx):
         return int(self.masks[idx].sum().item())
@@ -566,3 +649,61 @@ def get_carla_multipath_rep_dataset(
     return TrajectorySlicerSubset(
         train_set, window=window_size
     ), TrajectorySlicerSubset(val_set, window=window_size)
+    
+    
+def get_bridge_dataset(
+    data_directory,
+    subset_fraction=1.0,
+    train_fraction=0.9,
+    random_seed=42,
+    device="cuda",
+    batch_size=None,
+    window_size=10,
+    task='all_pickplace_except_tk6', 
+    target_task='toykitchen6_croissant_out_of_pot',
+    debug=False,
+    encoder: nn.Module = nn.Identity,
+    preprocess: Callable[[torch.Tensor], torch.Tensor] = None,
+    postprocess: Callable[[torch.Tensor], torch.Tensor] = None,
+):
+    train_set = TrajectoryRepDataset(
+        BridgeTrajectoryDataset(
+            data_directory,
+            subset_fraction=subset_fraction,
+            device=device,
+            preprocess_to_float=False,
+            get_train=True,
+            task=task,
+            target_task=target_task,
+            debug=debug,
+        ),
+        encoder,
+        preprocess=preprocess,
+        postprocess=postprocess,
+        device=device,
+        batch_size=batch_size,
+    )
+    
+    val_set = TrajectoryRepDataset(
+        BridgeTrajectoryDataset(
+            data_directory,
+            subset_fraction=subset_fraction,
+            device=device,
+            preprocess_to_float=False,
+            get_train=False,
+            task=task,
+            target_task=target_task,
+            debug=debug,
+        ),
+        encoder,
+        preprocess=preprocess,
+        postprocess=postprocess,
+        device=device,
+        batch_size=batch_size,
+    )
+    
+    
+    return (
+        TrajectorySlicerSubset(train_set, window=window_size), 
+        TrajectorySlicerSubset(val_set, window=window_size)
+    )
