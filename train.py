@@ -127,7 +127,7 @@ class Workspace:
                     enc_obs = self.obs_encoding_net(obs)
                 else:
                     enc_obs = obs
-                enc_obs = torch.cat([enc_obs, act], dim=-1)
+                enc_obs = torch.cat([enc_obs, task.cuda()], dim=-1)
                 enc_obs = self.obs_encoding_net.linear_proj(enc_obs)
                 latent = self.action_ae.encode_into_latent(act, enc_obs)
                 _, loss, loss_components = self.state_prior.get_latent_and_loss(

@@ -41,7 +41,7 @@ eval_every: 1
 save_every: 1
 
 # Wandb config
-project: behavior_transformer_test
+project: BET_bridge_kitchen
 experiment: bridge_data
 
 hydra:

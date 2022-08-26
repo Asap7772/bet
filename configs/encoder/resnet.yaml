@@ -1,5 +1,5 @@
-_target_: models.resnet.resnet34
+_target_: models.resnet.resnet18
 pretrained: True
 freeze_pretrained: True
 output_dim: 512
-reproject_dim: 519
+reproject_dim: 620
