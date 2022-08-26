@@ -11,7 +11,7 @@ lazy_init_models: True
 device: cuda
 seed: 42
 load_dir: ${env.load_dir}
-# Length of history
+# Length of history 
 window_size: 3
 
 # Environment running setup

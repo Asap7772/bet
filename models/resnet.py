@@ -67,6 +67,7 @@ class resnet34(nn.Module):
             n = x.shape[0]
             t = x.shape[1]
             x = rearrange(x, "n t c h w -> (n t) c h w")
+        
         x = self.normalize(x)
         out = self.resnet(x)
         out = self.flatten(out)
